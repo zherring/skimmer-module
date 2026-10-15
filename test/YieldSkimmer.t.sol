@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -75,6 +75,23 @@ contract YieldSkimmerTest is Test {
     /// @dev Independent restatement of the PRD ceiling with plain arithmetic.
     function _ceiling(uint256 p, uint256 dt) internal pure returns (uint256) {
         return p * CAP * dt / (365 days * 10_000);
+    }
+
+    function _count(Vm.Log[] memory logs, bytes32 topic0) internal view returns (uint256 n) {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(skimmer) && logs[i].topics[0] == topic0) n++;
+        }
+    }
+
+    /// @dev `yieldAmt` of the (single) `Skimmed` event in `logs`.
+    function _skimmedYield(Vm.Log[] memory logs) internal view returns (uint256 yieldAmt) {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(skimmer) && logs[i].topics[0] == YieldSkimmer.Skimmed.selector) {
+                (, yieldAmt,,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
+                return yieldAmt;
+            }
+        }
+        revert("no Skimmed event");
     }
 
     function _sumAccrued() internal view returns (uint256 sum) {
@@ -179,7 +196,7 @@ contract YieldSkimmerTest is Test {
         assertEq(skimmer.accrued(r1), 4e6, "recipient credited");
         // Retained 6 USDC becomes principal; position lost only the 4 USDC taken (+ <= 1 wei of share rounding).
         assertApproxEqAbs(skimmer.principal(), DEPOSIT + 6e6, 1);
-        assertGe(skimmer.position(), skimmer.principal());
+        assertEq(skimmer.principal(), skimmer.position(), "the watermark is the position after a skim");
         assertEq(skimmer.lastSkim(), block.timestamp);
         assertEq(account.batchCount(), 1);
     }
@@ -209,7 +226,7 @@ contract YieldSkimmerTest is Test {
 
         // The retained share (yield - take = 4_000_002) is folded into principal.
         assertApproxEqAbs(skimmer.principal(), DEPOSIT + yieldAmt - take, 1);
-        assertGe(skimmer.position(), skimmer.principal());
+        assertEq(skimmer.principal(), skimmer.position(), "the watermark is the position after a skim");
     }
 
     function test_skim_noRecipients_retainsAllYieldAsPrincipal() public {
@@ -317,16 +334,17 @@ contract YieldSkimmerTest is Test {
         assertEq(usdc.balanceOf(address(skimmer)), 0);
     }
 
-    function test_ratchet_secondPassKeepsPositionAtOrAbovePrincipal() public {
-        // Non-round price so the vault's round-up on `withdraw` can leave the position a wei under the watermark.
+    function test_skim_principalEqualsPositionExactlyDespiteShareRounding() public {
+        // Non-round price so the vault's round-up on `withdraw` shifts the position by a wei from `assets - take`.
         _add(r1, 10_000, 1 days);
         _firstSkim();
         vm.warp(block.timestamp + 1 days);
         vault.setPricePerShare(1.0000123456789e18);
         skimmer.skim();
 
-        assertGe(skimmer.position(), skimmer.principal(), "position >= principal after a skim");
-        assertLe(skimmer.position() - skimmer.principal(), 1, "principal sits at most a wei under the position");
+        // 100% share: everything above the old watermark was taken, so the idealized principal is DEPOSIT.
+        assertApproxEqAbs(skimmer.principal(), DEPOSIT, 1);
+        assertEq(skimmer.principal(), skimmer.position(), "principal is re-read from the vault after the batch");
     }
 
     /* -------------------------------------------------------------------------- */
@@ -364,28 +382,31 @@ contract YieldSkimmerTest is Test {
         assertEq(usdc.balanceOf(address(skimmer)), moved, "no yield since, so nothing more moves");
     }
 
-    function test_absorb_withAbsoluteMaxBinding_restOfTheCeilingStaysSkimmable() public {
+    function test_absorb_withAbsoluteMaxBinding_restOfTheCeilingCompounds() public {
         _add(r1, 10_000, 1 days);
         vm.prank(address(account));
         skimmer.setCap(CAP, 5e6);
         _firstSkim();
         vm.warp(block.timestamp + 1 days);
-        _deposit(10_000e6); // position 110_000e6; the ceiling absorbs everything above 110_000e6 - 82_191_780
+        _deposit(10_000e6); // position 110_000e6; the ceiling is ~82 USDC, absoluteMaxPerSkim only 5
 
         skimmer.skim();
 
-        uint256 ceiling = _ceiling(DEPOSIT, 1 days);
         assertEq(usdc.balanceOf(address(skimmer)), 5e6, "yield is capped by absoluteMaxPerSkim");
-        // Only the excess beyond the ceiling is folded into principal; ceiling - 5 USDC is still above the watermark.
-        assertEq(skimmer.principal(), 110_000e6 - ceiling);
-        assertEq(skimmer.position() - skimmer.principal(), ceiling - 5e6);
+        // Whatever stays in the vault is principal: the deposit and the part of the ceiling the cap cut off.
+        assertEq(skimmer.principal(), 110_000e6 - 5e6);
+        assertEq(skimmer.position(), skimmer.principal());
+
+        vm.warp(block.timestamp + 1 days);
+        skimmer.skim();
+        assertEq(usdc.balanceOf(address(skimmer)), 5e6, "nothing is carried over to the next skim");
     }
 
     /* -------------------------------------------------------------------------- */
     /*                               ABSOLUTE MAX / CEILING                       */
     /* -------------------------------------------------------------------------- */
 
-    function test_absoluteMax_bindsAndLeftoverIsPickedUpLater() public {
+    function test_absoluteMax_bindsAndLeftoverCompoundsImmediately() public {
         _add(r1, 10_000, 1 days);
         vm.prank(address(account));
         skimmer.setCap(CAP, 5e6);
@@ -396,12 +417,15 @@ contract YieldSkimmerTest is Test {
         skimmer.skim();
 
         assertEq(usdc.balanceOf(address(skimmer)), 5e6, "absoluteMaxPerSkim binds");
-        // The other 5 USDC is still above the watermark (less <= 1 wei of share rounding).
-        assertApproxEqAbs(skimmer.position() - skimmer.principal(), 5e6, 1);
+        // The other 5 USDC stayed in the vault and is principal now, not a carry-over.
+        assertEq(skimmer.principal(), skimmer.position());
+        assertApproxEqAbs(skimmer.principal(), DEPOSIT + 5e6, 1);
 
         vm.warp(block.timestamp + 1 days);
+        (uint256 previewYield,) = skimmer.previewSkim();
+        assertEq(previewYield, 0, "the leftover is not skimmable later");
         skimmer.skim();
-        assertApproxEqAbs(usdc.balanceOf(address(skimmer)), 10e6, 1, "the next poke takes the leftover");
+        assertEq(usdc.balanceOf(address(skimmer)), 5e6);
     }
 
     function test_ceiling_bindsOnElapsedTime() public {
@@ -417,11 +441,12 @@ contract YieldSkimmerTest is Test {
         assertEq(ceiling, 3_424_657);
         assertEq(usdc.balanceOf(address(skimmer)), ceiling);
         assertEq(skimmer.accrued(r1), ceiling);
-        // The rest of the 1,000 USDC was absorbed into principal.
+        // The rest of the 1,000 USDC stayed in the vault and is principal.
         assertApproxEqAbs(skimmer.principal(), DEPOSIT + 1000e6 - ceiling, 1);
+        assertEq(skimmer.principal(), skimmer.position());
     }
 
-    function test_ceiling_twoSkimsInTheSameBlockMoveNothingTheSecondTime() public {
+    function test_ceiling_secondSkimInTheSameBlockIsATrueNoOp() public {
         _add(r1, 10_000, 1 days);
         _firstSkim();
         vm.warp(block.timestamp + 1 days);
@@ -430,22 +455,28 @@ contract YieldSkimmerTest is Test {
         skimmer.skim();
         uint256 moved = usdc.balanceOf(address(skimmer));
         uint256 principalBefore = skimmer.principal();
+        uint256 batches = account.batchCount();
         assertEq(moved, 10e6);
 
         (uint256 previewYield, uint256 previewTake) = skimmer.previewSkim();
         assertEq(previewYield, 0);
         assertEq(previewTake, 0);
 
+        vm.recordLogs();
         skimmer.skim(); // same block, elapsed == 0
+        Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertEq(usdc.balanceOf(address(skimmer)), moved, "second skim in the same block moves nothing");
         assertEq(skimmer.accrued(r1), moved);
-        assertEq(skimmer.principal(), principalBefore, "and the watermark does not move");
+        assertEq(skimmer.principal(), principalBefore, "the watermark does not move");
+        assertEq(account.batchCount(), batches, "no batch");
+        assertEq(_count(logs, YieldSkimmer.Credited.selector), 0, "no Credited");
+        assertEq(_skimmedYield(logs), 0, "yieldAmt == 0");
     }
 
-    /// @dev Documents a consequence of the PRD rules: elapsed == 0 means ceiling == 0, so any excess left behind by
-    ///      `absoluteMaxPerSkim` is absorbed (not skimmed) by an immediate second call.
-    function test_ceiling_secondSkimInSameBlockAbsorbsLeftoverFromAbsoluteMax() public {
+    /// @dev The rule that replaced the old carry: yield cut off by `absoluteMaxPerSkim` compounds on the skim itself,
+    ///      so an immediate second call has nothing to absorb or recognize.
+    function test_ceiling_secondSkimInSameBlockAfterAbsoluteMaxBound_isANoOp() public {
         _add(r1, 10_000, 1 days);
         vm.prank(address(account));
         skimmer.setCap(CAP, 5e6);
@@ -454,12 +485,35 @@ contract YieldSkimmerTest is Test {
         _addYield(10e6);
 
         skimmer.skim();
-        assertApproxEqAbs(skimmer.position() - skimmer.principal(), 5e6, 1);
+        uint256 principalBefore = skimmer.principal();
+        assertEq(principalBefore, skimmer.position());
 
+        vm.recordLogs();
         skimmer.skim();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertEq(usdc.balanceOf(address(skimmer)), 5e6, "nothing more is moved");
-        assertEq(skimmer.position(), skimmer.principal(), "the leftover became principal");
+        assertEq(skimmer.principal(), principalBefore, "principal unchanged");
+        assertEq(_count(logs, YieldSkimmer.Credited.selector), 0);
+        assertEq(_skimmedYield(logs), 0);
+    }
+
+    function test_skim_secondsLater_recognizesOnlyWhatAccruedInBetween() public {
+        _add(r1, 10_000, 1 days);
+        _firstSkim();
+        vm.warp(block.timestamp + 1 days);
+        _addYield(10e6);
+        skimmer.skim();
+
+        vm.warp(block.timestamp + 10);
+        _addYield(5000); // 0.005 USDC; the ceiling for 10 seconds is 9_512 wei
+        assertEq(_ceiling(DEPOSIT, 10), 9512);
+        (uint256 previewYield,) = skimmer.previewSkim();
+        assertEq(previewYield, 5000);
+
+        skimmer.skim();
+        assertEq(usdc.balanceOf(address(skimmer)), 10e6 + 5000);
+        assertEq(skimmer.principal(), skimmer.position());
     }
 
     function test_absoluteMaxZero_recognizesNoYield() public {
@@ -474,6 +528,8 @@ contract YieldSkimmerTest is Test {
 
         assertEq(usdc.balanceOf(address(skimmer)), 0);
         assertEq(account.batchCount(), 0);
+        assertEq(skimmer.principal(), DEPOSIT + 10e6, "with nothing taken the whole position compounds");
+        assertEq(skimmer.principal(), skimmer.position());
     }
 
     /* -------------------------------------------------------------------------- */
@@ -1013,7 +1069,7 @@ contract YieldSkimmerTest is Test {
         assertLe(_sumAccrued(), moved, "credited <= skimmed");
         assertEq(moved, previewYield * (uint256(share1) + share2) / 10_000);
 
-        assertGe(skimmer.position(), skimmer.principal(), "position >= principal after skim");
+        assertEq(skimmer.position(), skimmer.principal(), "principal == position after skim");
         if (assetsBefore >= principalBefore) {
             assertGe(skimmer.principal() + 1, principalBefore, "a skim never lowers principal beyond 1 wei rounding");
         } else {

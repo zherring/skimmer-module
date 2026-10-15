@@ -240,7 +240,7 @@ contract YieldSkimmerForkTest is Test {
         // The position fell by the take (plus at most a wei or two of share rounding) and still covers the watermark.
         uint256 positionAfter = _position();
         assertApproxEqAbs(positionBefore - positionAfter, previewTake, 2);
-        assertGe(positionAfter, skimmer.principal(), "position >= principal");
+        assertEq(positionAfter, skimmer.principal(), "the watermark is the position after a skim");
         // Retained 30% of the yield is now principal.
         assertApproxEqAbs(skimmer.principal(), principal0 + (previewYield - previewTake), 2);
 
@@ -265,7 +265,7 @@ contract YieldSkimmerForkTest is Test {
 
         skimmer.skim();
         assertEq(usdc.balanceOf(address(skimmer)), 35e6, "70% of $50");
-        assertGe(_position(), skimmer.principal());
+        assertEq(_position(), skimmer.principal());
     }
 
     /// @dev An unannounced deposit is absorbed rather than skimmed; the cap bounds what a false positive can cost.
@@ -291,10 +291,15 @@ contract YieldSkimmerForkTest is Test {
 
         // At most $50 moved, even though $100k appeared above the watermark.
         assertEq(usdc.balanceOf(address(skimmer)), 35e6);
-        // Everything above one ceiling's worth of the deposit became principal.
+        // Everything that stayed in the vault became principal: the deposit and the yield the $50 cap cut off.
         uint256 ceiling = principal0 * 3000 * 1 days / (365 days * 10_000);
-        assertGe(skimmer.principal(), positionBefore - ceiling - 2);
-        assertGe(_position(), skimmer.principal());
+        assertGt(ceiling, 50e6, "the cap, not the ceiling, bound");
+        assertApproxEqAbs(skimmer.principal(), positionBefore - 35e6, 2);
+        assertEq(_position(), skimmer.principal());
+
+        // Nothing is carried over: no yield is left above the new watermark (the unit tests cover the next-day skim).
+        (uint256 nextYield,) = skimmer.previewSkim();
+        assertEq(nextYield, 0);
     }
 
     function test_fork_skim_withdrawalByTheOwnerRatchetsPrincipalDown() public {

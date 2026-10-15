@@ -38,7 +38,7 @@ contract SkimmerHandler is Test {
     uint256 public ghostLastTake;
 
     // Violation flags, one per invariant.
-    bool public violatedPositionBelowPrincipal; // (1)
+    bool public violatedPrincipalNotPosition; // (1)
     bool public violatedPrincipalLowered; // (2)
     bool public violatedTakeAboveBound; // (4)
     bool public violatedPausedSkim;
@@ -48,6 +48,7 @@ contract SkimmerHandler is Test {
     bool public violatedLiveness; // skim reverted although the vault could serve it
     bool public violatedPreview; // previewSkim disagreed with what skim moved
     bool public violatedModel; // skim disagreed with a from-scratch restatement of the PRD mechanics
+    bool public violatedNoOp; // a skim with nothing new to recognize moved something
 
     mapping(bytes32 => uint256) public calls;
 
@@ -199,11 +200,11 @@ contract SkimmerHandler is Test {
         ghostTotalSkimmed += take;
         ghostTotalCredited += _sumAccrued() - b.accrued;
 
-        // (1) The position never ends a skim below the watermark.
-        if (positionAfter < principalAfter) violatedPositionBelowPrincipal = true;
+        // (1) After every skim the watermark IS the position (re-read after the batch, so exact).
+        if (positionAfter != principalAfter) violatedPrincipalNotPosition = true;
 
         // (2) A skim lowers principal only through the ratchet: either the position was already below it, or the
-        // second pass trimmed a wei of share rounding. It never ends above the pre-skim position either.
+        // vault's round-up on `withdraw` shaved a wei off `assets - take`. It never ends above the pre-skim position.
         if (principalAfter < b.principal) {
             bool ratchet = b.assets < b.principal;
             bool rounding = principalAfter == positionAfter && b.principal - principalAfter <= ROUNDING;
@@ -221,17 +222,23 @@ contract SkimmerHandler is Test {
 
         if (take != b.previewTake) violatedPreview = true;
 
-        // Reference model, restated literally from the PRD (steps 2-6) rather than shared with the contract.
-        if (b.assets - p > ceiling) p = b.assets - ceiling; // step 3: absorb
-        uint256 modelYield = b.assets - p; // step 4: min(excess, ceiling, absoluteMax)
+        // Reference model, restated literally from the PRD rules rather than shared with the contract: yield is
+        // min(position - ratcheted principal, ceiling, absoluteMax); what stays in the vault is the new principal.
+        uint256 modelYield = b.assets - p;
         if (modelYield > ceiling) modelYield = ceiling;
         if (modelYield > b.absoluteMax) modelYield = b.absoluteMax;
         uint256 modelTake = modelYield * b.totalShareBps / 10_000;
-        p += modelYield - modelTake; // step 6: the retained share becomes principal
+        uint256 modelPrincipal = b.assets - modelTake;
         if (take != modelTake) violatedModel = true;
         if (skimmer.lastSkim() != block.timestamp) violatedModel = true;
-        // The contract may trim at most the vault's share rounding off the end of the model's watermark.
-        if (principalAfter > p || p - principalAfter > ROUNDING) violatedModel = true;
+        // The vault's share rounding may shave at most a wei off the model; with nothing taken it must be exact.
+        if (principalAfter > modelPrincipal || modelPrincipal - principalAfter > ROUNDING) violatedModel = true;
+        if (modelTake == 0 && principalAfter != b.assets) violatedModel = true;
+
+        // A skim in the same block as the previous one, with the position untouched since, is a true no-op.
+        if (b.lastSkim == block.timestamp && b.assets == b.principal) {
+            if (take != 0 || _sumAccrued() != b.accrued || principalAfter != b.principal) violatedNoOp = true;
+        }
     }
 
     function pull(uint256 recipientSeed, uint256 callerSeed) external {
@@ -416,12 +423,18 @@ contract YieldSkimmerInvariantTest is StdInvariant, Test {
         assertLe(handler.ghostTotalCredited(), handler.ghostTotalSkimmed());
     }
 
-    /// @dev (1) After every skim the position is at or above the watermark.
-    function invariant_positionCoversPrincipalAfterEverySkim() public view {
-        assertFalse(handler.violatedPositionBelowPrincipal());
+    /// @dev (1) After every skim the watermark is exactly the position.
+    function invariant_principalEqualsPositionAfterEverySkim() public view {
+        assertFalse(handler.violatedPrincipalNotPosition());
     }
 
-    /// @dev (2) A skim only lowers principal through the ratchet, and never lifts it above the position it read.
+    /// @dev A second skim in the same block, with nothing changed in between, moves and credits nothing.
+    function invariant_sameBlockSkimIsANoOp() public view {
+        assertFalse(handler.violatedNoOp());
+    }
+
+    /// @dev (2) A skim only lowers principal through the ratchet (plus a wei of vault share rounding), and never lifts
+    ///      it above the position it read.
     function invariant_principalOnlyRatchetsDown() public view {
         assertFalse(handler.violatedPrincipalLowered());
     }
@@ -463,7 +476,7 @@ contract YieldSkimmerInvariantTest is StdInvariant, Test {
         assertFalse(handler.violatedPreview());
     }
 
-    /// @dev Skim matches an independent restatement of the PRD mechanics (take, retained share folded into principal).
+    /// @dev Skim matches an independent restatement of the mechanics (take, and everything left in the vault is principal).
     function invariant_skimMatchesReferenceModel() public view {
         assertFalse(handler.violatedModel());
     }
