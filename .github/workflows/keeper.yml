@@ -1,0 +1,53 @@
+name: keeper
+
+# Pokes the YieldSkimmer: skim() when there is yield, then pull() for every due recipient (ops/keeper.sh).
+# 09:00 UTC is one hour before the planned Song A Day bidder cron, so its pull() finds the day's yield credited.
+#
+# Secrets:   KEEPER_PRIVATE_KEY (a gas-only EOA), BASE_RPC_URL
+# Variables: SKIMMER_ADDRESS
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the cast send commands instead of sending them"
+        type: boolean
+        default: false
+
+# Two runs must never overlap (they would race on the keeper's nonce). Queue, never cancel a run mid-send.
+concurrency:
+  group: keeper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  keeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run keeper
+        env:
+          SKIMMER: ${{ vars.SKIMMER_ADDRESS }}
+          RPC_URL: ${{ secrets.BASE_RPC_URL }}
+          KEEPER_PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          ops/keeper.sh 2>&1 | tee logs/keeper.log
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keeper-log-${{ github.run_id }}
+          path: logs/keeper.log
+          if-no-files-found: ignore
