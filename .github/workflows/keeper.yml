@@ -26,6 +26,8 @@ permissions:
 
 jobs:
   keeper:
+    # Until the SKIMMER_ADDRESS variable exists the scheduled run has nothing to poke; skip instead of failing daily.
+    if: ${{ vars.SKIMMER_ADDRESS != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
