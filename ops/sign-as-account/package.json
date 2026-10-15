@@ -1,0 +1,17 @@
+{
+  "name": "sign-as-account",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sign EIP-712 typed data as a Splits SmartVault (ERC-1271, threshold-aware); Glider two-stage enrollment wrapper.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check sign-as-account.mjs && node --check glider-enroll.mjs && node --check mock-glider.mjs",
+    "test": "./test.sh"
+  },
+  "dependencies": {
+    "viem": "2.56.9"
+  }
+}
