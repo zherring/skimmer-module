@@ -4,7 +4,7 @@ Oct 15, 2026 · @zach
 
 ## Thesis
 
-A lossless endowment: capital parked in a Splits account stays mine, and only the yield it throws off is spent — on things that should exist but don't have a buyer every day. The first beneficiary is Jonathan Mann's daily Song A Day auction: the endowment places a standing bid, every day, forever.
+A lossless endowment: capital parked in a Splits account stays mine, and only the yield it throws off is spent — on things that should exist but don't have a buyer every day. The headline beneficiary is Jonathan Mann's daily Song A Day auction: the endowment places a standing bid, every day, forever. The first recipient to go live is the boring one — a weekly DCA into an index through Glider, which needs no contract at all — because it proves the module with real money before the bidder exists.
 
 The property that makes this worth building is that **no key anywhere can touch principal**. Not a bot key, not a server, not me by accident. That holds because the skimmer is a SmartVault module whose only code path moves yield, and the bidder is a plain contract that can only spend what the skimmer hands it.
 
@@ -31,7 +31,7 @@ This is a personal experiment on Splits, shipped and written up as a demonstrati
 - Choosing the vault. The module reads whatever Earn vault the subaccount already holds (Morpho V2 wrapper, ERC-4626).
 - Multi-chain. One chain (Base) for v1.
 - Any Splits app or CLI integration. Enabling the module goes through `transactions create custom` as a self-call; the app may not render module activity.
-- Scheduling. The module is permissionless to poke; a cron, a keeper or a human calls it.
+- Scheduling. The module is permissionless to poke; a cron, a keeper or a human calls it. The v1 keeper is a scheduled GitHub Actions job in this repo that sends `skim()` and any due `pull()` from a gas-only EOA — a key that can only poke permissionless functions and whose worst case is losing its gas money.
 
 ### Mechanics
 
@@ -57,6 +57,12 @@ Recipients pull; the skimmer never pushes. Each recipient is a plain contract ad
 | `accrued` | USDC credited but not yet pulled. Held in the module until pulled. | — |
 
 `pull(recipient)` transfers `accrued` to the recipient and zeroes it. Anyone can call it; only the recipient receives. Timing logic beyond the interval lives in the recipient, not here.
+
+Planned recipients, in the order they go live:
+
+1. **Glider DCA account** — a plain address, no code. Glider gives each portfolio a smart account on Base that sweeps any USDC sent to it into the strategy's target allocation, so `pull()` is the deposit. Weekly interval. See `docs/recipients/glider.md`.
+2. **Song A Day endowment** — the contract in Part 2. Daily interval.
+3. **Remainder** — stays in the vault and compounds.
 
 ### Admin surface
 
@@ -115,6 +121,7 @@ One module instance per endowment subaccount; `account` is fixed at deploy so a 
 | `capBps` | 3,000 (30% APR) | Several times any plausible net stablecoin yield; only bites on non-yield |
 | `absoluteMaxPerSkim` | \~$50 | Belt-and-suspenders on a single call while the heuristics are unproven |
 | Skim cadence | Daily, from a cron | Matches the auction cadence; nothing enforces it onchain |
+| First recipient | Glider portfolio account, 5,000 bps, 7-day interval | A plain address with no code. The other 5,000 compounds until the bidder joins at its 4,000; strategy and share are mine to pick at enrollment |
 | Initial principal | Whatever I'm comfortable losing to a bug in v1 | This is an experiment first |
 
 ### Invariants and threat model
@@ -260,11 +267,12 @@ Each step proves one thing and is a writeup on its own.
 
 1. **Enable a no-op module.** Deploy a module that does nothing, push `enableModule` through `transactions create custom` as a self-call, confirm it lands onchain, then `disableModule` the same way. Proves the Splits platform doesn't block the module path. The backend code says it won't (no filter on custom self-calls, only a revert simulation), but this is the onchain proof. If it fails, everything below changes shape.
 2. **Skimmer, single recipient = my own account.** Fund the endowment subaccount with a small amount, confirm `isModuleEnabled(AutoEarnModuleV2)` and that its shares are in `splitsUSDC` rather than the legacy Aave vault, enable the skimmer with 100% share to an EOA I control, run `skim()` daily for two weeks. Proves the watermark, the ratchet, absorption and the rate cap against real Morpho V2 share-price movement and real auto-earn sweeps. Deliberately deposit and withdraw mid-run without resetting.
-3. **Bidder on a fork.** Registering an auction on the live house is `onlyOwner`, so this runs on a Base fork: deploy `SongADayEndowment`, fund it directly, register a test auction as the house owner, run `execute()` through outbid (collect via `withdraw`) and win. On a mainnet fork, deploy the twin at the same CREATE2 address, `safeTransferFrom` a Song A Day token to it from the operator address with an 83k gas limit, and `forward` it to `recipient`. Also flip `editionTokenId` on and confirm the 1155 hook. Proves the GBM integration and both delivery paths without touching Jonathan's auction.
-4. **Live, small.** Point the bidder at the real auction with a few days of accumulated yield. Let it bid. Write up what happened.
-5. **Scale principal** to the amount that makes the standing bid meaningful, once a month of 4 has gone cleanly.
+3. **Glider recipient, weekly.** The first real recipient needs no contract and no API: enroll in Glider from an EOA I control, pick a non-USDC index strategy, and register the portfolio's Base smart account as a recipient (`addRecipient(glider, 5,000, 7 days)`). The keeper pulls weekly; Glider sweeps the USDC into the index on its own schedule. Proves the plain-address recipient path, the keeper and the `minInterval` cadence end to end with real money and zero new code. Details in `docs/recipients/glider.md`.
+4. **Bidder on a fork.** Registering an auction on the live house is `onlyOwner`, so this runs on a Base fork: deploy `SongADayEndowment`, fund it directly, register a test auction as the house owner, run `execute()` through outbid (collect via `withdraw`) and win. On a mainnet fork, deploy the twin at the same CREATE2 address, `safeTransferFrom` a Song A Day token to it from the operator address with an 83k gas limit, and `forward` it to `recipient`. Also flip `editionTokenId` on and confirm the 1155 hook. Proves the GBM integration and both delivery paths without touching Jonathan's auction.
+5. **Live, small.** Point the bidder at the real auction with a few days of accumulated yield. Let it bid. Write up what happened.
+6. **Scale principal** to the amount that makes the standing bid meaningful, once a month of 5 has gone cleanly.
 
-Steps 1 and 2 are the ones that produce something Splits can learn from regardless of whether the endowment idea goes anywhere.
+Steps 1–3 are the ones that produce something Splits can learn from regardless of whether the endowment idea goes anywhere.
 
 ## Open questions
 
