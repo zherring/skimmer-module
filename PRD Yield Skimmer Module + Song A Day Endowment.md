@@ -172,7 +172,7 @@ Everything below was read from the verified house source and live state on 15 Oc
 
 **Refunds.** If the outbid bidder has code, the house does not push: it credits `bid + dueIncentives` internally, and anyone can call `withdraw(address)` to send it to that address (`GBM.sol:472-492`). `receive()` is only hit inside `withdraw`, and a reverting `receive()` only makes `withdraw` revert — nothing is lost and nothing can block the auction.
 
-**Settlement — the important one.** `claim`/`claimMultiple` (anyone can call) send `highestBid − incentives` to the beneficiary and transfer no NFT. The Song A Day contract (`0x19b703f65aA7E1E775BD06c2aa0D0d08c80f1C45`) exists only on Ethereum mainnet. The song is minted there by the operator wallet (`0xabA3A04FC85Fd7bBC2538E708e9E30bbc59899C3`) and transferred to the Base `highestBidder` address, in batches, days to weeks after the auction (recent batches: 8 Apr, 19 May, 28 Jun, 7 Jul, 24 Jul, 24 Aug, 6 Sep, 6 Oct 2026; for 30+ sampled auctions mainnet `ownerOf` equals the Base winner). So a contract that exists only on Base can never hold its winnings — hence the mainnet twin below. Whether the operator uses `safeTransferFrom` or `transferFrom` is unknown; design for plain `transferFrom`.
+**Settlement — the important one.** `claim`/`claimMultiple` (anyone can call) send `highestBid − incentives` to the beneficiary and transfer no NFT. The Song A Day contract (`0x19b703f65aA7E1E775BD06c2aa0D0d08c80f1C45`) exists only on Ethereum mainnet. The song is minted there by the operator wallet (`0xabA3A04FC85Fd7bBC2538E708e9E30bbc59899C3`) and transferred to the Base `highestBidder` address, in batches, days to weeks after the auction (recent batches: 8 Apr, 19 May, 28 Jun, 7 Jul, 24 Jul, 1 Aug, 24 Aug, 4 Sep, 5 Oct 2026; in 31 of 31 sampled deliveries the mainnet recipient equals the Base winner). So a contract that exists only on Base can never hold its winnings — hence the mainnet twin below. The operator delivers with `safeTransferFrom` — 69 of 71 transfers over 75 days used the 3-arg form (`0x42842e0e`), two used the 4-arg form, none used `transferFrom` — one tx per token, straight from the operator EOA, with a gas limit of about 83k. The SAD contract is OpenZeppelin 4.x ERC-721, so a recipient with code must return `0x150b7a02` from `onERC721Received` or the operator's tx reverts. The twin's hook therefore exists, returns the selector, and does nothing else; forwarding inside it would push the operator's tx past its gas limit.
 
 **The bidding edition.** A Zora Creator ERC-1155 on Base (`0xb3bad5fE12268EDC8a52Ff786076C1D1fA92eF0d`), minted to `bidder` inside the first bid via `adminMint` (`GBM.sol:184-187`) whenever the auction's `editionTokenId` is non-zero. It has been 0 since #6076 (Aug 2025), but the owner can switch it back on at any time, and Zora's mint calls `onERC1155Received` on contracts — a bidder without that hook would start reverting.
 
@@ -185,11 +185,11 @@ The contract holds one pot of ETH and runs one permissionless `execute()` a day.
 1. **Pull.** `skimmer.pull(this)` — collects whatever yield share has accrued since yesterday (USDC).
 2. **Collect.** If `house.getWithdrawBalance(this) > 0`, call `house.withdraw(this)`. Outbid refunds and incentives are credited to a contract bidder internally, never pushed, so this is where they re-enter the pot.
 3. **Swap.** USDC → native ETH on a fixed DEX route on Base (WETH out, unwrapped in the same call). The pot is the contract's ETH balance; there is no other accounting.
-4. **Find the auction.** `tokenId = days since 2009-01-01, inclusive` for today and for yesterday (UTC); `id = house.getAuctionIDSongADao(songs, tokenId)`. A candidate is registered (`getAuctionEndTime(id) != 0`), not ended, and not already bid on (`tokenId > lastBidTokenId`). Prefer today's. None → hold.
+4. **Find the auction.** `t = days since 2009-01-01, inclusive` (UTC). For each of `t`, `t−1`, `t−2`: `id = house.getAuctionIDSongADao(songs, tokenId)`; eligible if registered (`id != 0`), live (`start ≤ now ≤ getAuctionEndTime(id)`), and not already bid on (`!bidded[tokenId]`). Pick the eligible one with the latest end time — the most time left, which is what "bid early" means. None → hold. At the 10:00 UTC cron this is normally `t−1`, registered the previous afternoon and ending at 20:43 UTC today; `t` wins when the owner registered it early.
 5. **Bid or hold.** `minNext = max(ceil(high × 1.1), minBidWei)`. If `pot ≥ minNext`, `bid{value: pot}(id, pot, high, address(this))` with `high` read in the same transaction. If not, do nothing; tomorrow's pull makes the pot bigger. This is the accumulate behavior: day one, then day one plus day two, and so on until a bid can be placed and until it wins. Bidding the whole pot is deliberate: the pot is only ever accumulated yield, so paying more than the bot-clearing price (~0.002 ETH) is the endowment doing its job, not a bug. There is no overpayment refund in an English auction, and the pot is bounded by the yield rate.
-6. **One bid per auction.** Set `lastBidTokenId`. The contract never re-bids after being outbid in the same auction; it bids early and once.
+6. **One bid per auction.** Set `bidded[tokenId]`. The contract never re-bids after being outbid in the same auction; it bids early and once.
 7. **Outbid.** The house credits bid + incentive to this address; step 2 collects it tomorrow. Tomorrow's bid is yesterday's pot plus the refund plus the new pull.
-8. **Won.** Nothing arrives on Base. Days to weeks later the operator mints the song on mainnet to this address; anyone calls `forward(songs, tokenId)` on the mainnet twin to send it to `recipient`. If an edition was minted, `onERC1155Received` accepts it and `forward` sends it to `recipient` on Base. The pot is whatever is left — normally near zero — and accumulation starts again.
+8. **Won.** Nothing arrives on Base. Days to weeks later the operator `safeTransferFrom`s the song on mainnet to this address; the twin's `onERC721Received` returns the selector and nothing else, and anyone then calls `forward(songs, tokenId)` to send it to `recipient`. If an edition was minted, `onERC1155Received` accepts it the same way and `forward` sends it to `recipient` on Base. The pot is whatever is left — normally near zero — and accumulation starts again.
 
 The caller pays gas for `execute()` (a bid with an end-time extension is ~125k gas); on Base that is cents. An optional `keeperTipWei` reimbursement is a later nicety, not v1.
 
@@ -206,18 +206,19 @@ contract SongADayEndowment is IERC721Receiver, IERC1155Receiver {
     address recipient;        // my Splits account — songs (mainnet) and editions (Base) end here
     IGBM house;               // 0xd7829F0EFC16086a91Cf211CFbb0E4Ef29D16BEE
     address songs;            // 0x19b703f65aA7E1E775BD06c2aa0D0d08c80f1C45 — mainnet SAD contract; on Base only an auction-id input
-    ISwapRouter router;       // fixed USDC → native ETH route on Base
+    ISwapRouter02 router;     // Uniswap v3 SwapRouter02 on Base: exactInputSingle → unwrapWETH9 in one multicall
+    IUniswapV3Pool pool;      // USDC/WETH 0.05% pool, for the 30-min TWAP that bounds minOut
     uint256 minBidWei;        // floor so a first bid is never dust (the house accepts 2 wei)
 
     // state
-    uint256 lastBidTokenId;
+    mapping(uint256 => bool) bidded;   // tokenId → already bid, ever
 
     // permissionless
     function execute() external;      // pull, collect, swap, find auction, bid-or-hold
     receive() external payable;       // house.withdraw() and swap output land here
     function forward(address token, uint256 id) external;   // any ERC-721/1155 held → recipient; the mainnet twin's only job
     function sweep() external;                               // pot → recipient; retirement only
-    function onERC721Received(...) external returns (bytes4);  // accept (if the operator ever uses safeTransferFrom)
+    function onERC721Received(...) external returns (bytes4);  // return the selector, nothing else — the operator delivers with ~83k gas
     function onERC1155Received(...) external returns (bytes4); // accept the bidding edition without reverting the bid
 
     // views
@@ -237,9 +238,9 @@ There is no admin surface at all. Nothing is pausable or re-pointable; revocatio
 | `minInterval` on the skimmer | 1 day | One auction a day |
 | Bid size | Whole pot, always | No sizing logic to tune or get wrong; the pot is only ever yield, so overpaying the bot-clearing price is the point |
 | `minBidWei` | 0.0005 ETH (≈ a quarter of the median win) | The house accepts 2 wei. A bid that is sure to be outbid costs Jonathan the incentive out of his proceeds, so never place dust |
-| Slippage on swap | Tight, fixed | Amounts are small; a failed swap just means hold |
-| Cron | Once a day, ~23:00 UTC | After the owner's registration window (09:32–22:xx UTC) and after yesterday's 20:43:59 UTC close, so exactly one auction is live and ours is the early, visible bid |
-| Deployment | CREATE2, same address on Base and mainnet | Won songs are minted on mainnet to the Base winner's address |
+| Slippage on swap | `minOut` = 30-min TWAP of the 0.05% USDC/WETH pool × (1 − 2%) | The pool's observation cardinality is 5,000, so a 30-min `observe` always works; amounts are dust, so a failed swap just means hold |
+| Cron | 10:00 UTC, retries at 17:00 and 23:00 | Between the last of the owner's late registrations (09:32) and the first same-day one (13:50). Over 58 sampled days this hour bid on nothing twice, versus seven times at 23:00, with ≥ 10.7 h left on every bid; the retries cut the empty days to one |
+| Deployment | CREATE2 via `0x4e59b44847b379578588920cA78FbF26c0B4956C` (forge's default), same salt, byte-identical initcode | Won songs are delivered on mainnet to the Base winner's address. Needs `bytecode_hash = "none"`, `cbor_metadata = false`, same solc/optimizer/evm_version and the same constructor args on both chains |
 
 ### GBM integration — answered
 
@@ -259,7 +260,7 @@ Each step proves one thing and is a writeup on its own.
 
 1. **Enable a no-op module.** Deploy a module that does nothing, push `enableModule` through `transactions create custom` as a self-call, confirm it lands onchain, then `disableModule` the same way. Proves the Splits platform doesn't block the module path. The backend code says it won't (no filter on custom self-calls, only a revert simulation), but this is the onchain proof. If it fails, everything below changes shape.
 2. **Skimmer, single recipient = my own account.** Fund the endowment subaccount with a small amount, confirm `isModuleEnabled(AutoEarnModuleV2)` and that its shares are in `splitsUSDC` rather than the legacy Aave vault, enable the skimmer with 100% share to an EOA I control, run `skim()` daily for two weeks. Proves the watermark, the ratchet, absorption and the rate cap against real Morpho V2 share-price movement and real auto-earn sweeps. Deliberately deposit and withdraw mid-run without resetting.
-3. **Bidder on a fork.** Registering an auction on the live house is `onlyOwner`, so this runs on a Base fork: deploy `SongADayEndowment`, fund it directly, register a test auction as the house owner, run `execute()` through outbid (collect via `withdraw`) and win. On a mainnet fork, deploy the twin at the same CREATE2 address, `transferFrom` a Song A Day token to it from the operator address, and `forward` it to `recipient`. Also flip `editionTokenId` on and confirm the 1155 hook. Proves the GBM integration and both delivery paths without touching Jonathan's auction.
+3. **Bidder on a fork.** Registering an auction on the live house is `onlyOwner`, so this runs on a Base fork: deploy `SongADayEndowment`, fund it directly, register a test auction as the house owner, run `execute()` through outbid (collect via `withdraw`) and win. On a mainnet fork, deploy the twin at the same CREATE2 address, `safeTransferFrom` a Song A Day token to it from the operator address with an 83k gas limit, and `forward` it to `recipient`. Also flip `editionTokenId` on and confirm the 1155 hook. Proves the GBM integration and both delivery paths without touching Jonathan's auction.
 4. **Live, small.** Point the bidder at the real auction with a few days of accumulated yield. Let it bid. Write up what happened.
 5. **Scale principal** to the amount that makes the standing bid meaningful, once a month of 4 has gone cleanly.
 
@@ -273,12 +274,13 @@ Steps 1 and 2 are the ones that produce something Splits can learn from regardle
 - [x] **Gates.** All four gates on the wrapper are zero and all four setters are abdicated — permanently ungated. `withdraw(x, account, account)` from the account itself succeeds in an `eth_call` and in a real tx (`0x4f8c7c82…06b6`).
 - [x] **Vault.** One pooled vault per asset per chain; Base USDC is `0x189A1a23F46321a196646314E6a078a404513C8F` (`splitsUSDC`), ~7–8 weeks old. Earn on Base is USDC only (no ETH). A legacy Aave vault (`0x4EA7…caCc`) still holds ~$547k — check which one the subaccount is on.
 - [x] **One module per (vault, asset).** Decided. `vault` and `asset` stay immutable; a second asset is a second instance. Moot on Base today since Earn is USDC only.
-- [x] **Market.** Median winning bid 0.0021 ETH, mean 0.00287, max 0.015 over the last 60 auctions; ~1.5 bids per auction; one bot wins two-thirds. Sizing: daily yield to the bidder = `principal × 0.0375 × shareBps/10,000 ÷ 365`, so at 40% share $15k gives ≈ $0.62/day and $100k ≈ $4.10/day. Days of accumulation to a median bid = `0.0021 × ETHUSD ÷ daily`. $15k is enough to bid every week or two; a daily standing bid at the median needs principal in the low six figures.
+- [x] **Market.** Median winning bid 0.0021 ETH, mean 0.00287, max 0.015 over the last 60 auctions; ~1.5 bids per auction; one bot wins two-thirds. Sizing: daily yield to the bidder = `principal × 0.0375 × shareBps/10,000 ÷ 365`, so at 40% share $15k gives ≈ $0.62/day and $100k ≈ $4.10/day. Days of accumulation to a median bid = `0.0021 × ETHUSD ÷ daily`. At ETH ≈ 2,455 USDC (15 Oct 2026) the median bid is ≈ $5.2, so $15k at 40% reaches it every ~8 days and $100k every ~1.3 days. $15k is a weekly standing bid; a daily one at the median needs principal in the low six figures.
 - [ ] **Audit scope.** Proposed: a lightweight review by someone who has reviewed SmartVault is enough for steps 1–4, given the module's outbound calls are fixed to `vault.withdraw` + `asset.transfer`, each skim is bounded by `absoluteMaxPerSkim`, and the subaccount holds only endowment capital. Step 5 (scaling principal) is where a fuller review is warranted. Needs a decision.
-- [ ] **Mainnet twin.** Which deterministic deployer to use so Base and mainnet addresses match (Arachnid's deterministic-deployment proxy, `0x4e59b44847b379578588920cA78FbF26c0B4956C`, is on both), and whether `recipient` (my Splits account) is deployed on mainnet or only counterfactual there.
-- [ ] **Swap route.** Which fixed USDC → native-ETH route on Base (Uniswap v3 `exactInputSingle` + `unwrapWETH9`, or Aerodrome), and the slippage bound for dust-sized swaps.
-- [ ] **Delivery call.** Whether the operator delivers songs with `safeTransferFrom` (hook fires) or `transferFrom` (needs `forward`). Design for plain `transferFrom`; confirm from a delivery tx on mainnet.
-- [ ] **Day boundary.** Which timezone the operator's "today" uses for `tokenId` (registration at 09:32–22:xx UTC suggests US daytime). `execute()` sidesteps it by trying today and yesterday in UTC, but the cron hour should be checked against a week of registrations.
+- [x] **Mainnet twin.** Arachnid's deterministic-deployment proxy `0x4e59b44847b379578588920cA78FbF26c0B4956C` has identical 69-byte code on Base and mainnet (calldata is `salt ‖ initcode`, no selector), and it is `forge`'s default `create2_deployer`, so `new C{salt: s}()` in a script lands at the same address on both chains when the initcode is byte-identical. Verified with an `eth_call` probe on both chains and a `forge script` dry run.
+- [ ] **Recipient on mainnet.** Whether `recipient` (my Splits account) is deployed on mainnet or only counterfactual there. Either works for `forward` — a song sent to a counterfactual address waits — but check before the first live win.
+- [x] **Swap route.** Uniswap v3 SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481` (`factory()` and `WETH9()` verified). One `multicall(deadline, [exactInputSingle{recipient: address(2)}, unwrapWETH9(minOut, this)])`; `exactInputSingle` has no deadline field of its own. Pool: USDC/WETH 0.05% `0xd0b53D9277642d899DF5C87A3966A349A798F224` ($3.0M USDC / 2,510 WETH, cardinality 5,000, TWAP works to 6 h). The 0.3% pool `0x6c561B446416E1A00E8E93E221854d6eA4171372` only quotes better above ~$1M. `minOut` from the 30-min TWAP with a 2% tolerance; on 15 Oct the TWAP sat 0.26% above spot.
+- [x] **Delivery call.** `safeTransferFrom`, every time (69 × 3-arg, 2 × 4-arg, 0 × `transferFrom` across 71 deliveries). The hook is mandatory on the mainnet twin, must return `0x150b7a02`, and must be cheap — the operator sends with ≈ 83k gas. Four of the five winners in the latest batch were EIP-7702-delegated EOAs whose delegate returns the selector, which is why code-bearing winners already work today.
+- [x] **Day boundary.** `tokenId` is the UTC date: 52 of 60 registrations landed on the token's own UTC date (13:50–23:27 UTC), 8 the next morning (00:09–09:32, one at 15:31). Ids are contiguous. Ends are 20:43 UTC the next day in 40 of 60, later in the rest, one 4-day auction. Hence the 10:00 UTC cron and the `t, t−1, t−2` scan in Mechanics.
 
 ## References
 
@@ -304,6 +306,10 @@ Read with `cast` against Base (block ~52,653,000) and Sourcify. The house source
 | Song A Day (SAD) ERC-721 | Mainnet only | `0x19b703f65aA7E1E775BD06c2aa0D0d08c80f1C45` | No code on Base. Operator / minter `0xabA3A04FC85Fd7bBC2538E708e9E30bbc59899C3` |
 | Bidding edition | Base | `0xb3bad5fE12268EDC8a52Ff786076C1D1fA92eF0d` | Zora Creator 1155 proxy → `0x5eb5babcefea846b220c82f222f00df95934f5f0` |
 | Dominant bidder bot | Base | `0xBb7e1373c448575C4086B8153437109ef6198Ae5` | Won 38 of the last 56 sold auctions |
+| Uniswap v3 SwapRouter02 | Base | `0x2626664c2603336E57B271c5C0b26F421741e481` | `factory()` `0x33128a8fC17869897dcE68Ed026d694621f6FDfD`, `WETH9()` `0x4200000000000000000000000000000000000006`; `exactInputSingle`, `unwrapWETH9(uint256,address)`, `multicall(uint256 deadline, bytes[])` |
+| USDC/WETH 0.05% pool | Base | `0xd0b53D9277642d899DF5C87A3966A349A798F224` | token0 WETH, token1 USDC; observation cardinality 5,000 |
+| USDC/WETH 0.3% pool | Base | `0x6c561B446416E1A00E8E93E221854d6eA4171372` | Fallback; cardinality 2,000 |
+| Deterministic deployer | Base + mainnet | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | Identical code on both chains; `forge`'s default `create2_deployer` |
 
 ### Splits
 
