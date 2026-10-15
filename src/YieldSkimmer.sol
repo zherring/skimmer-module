@@ -11,9 +11,10 @@ import { ISmartVaultModuleManager } from "./interfaces/ISmartVaultModuleManager.
 
 /// @title YieldSkimmer
 /// @notice A Splits SmartVault module that moves realized yield, and only yield, out of one ERC-4626 position held by
-///         one account, and credits it to recipients by share. Principal is a self-healing watermark: it ratchets
-///         down when the position falls, absorbs inflows that are too large to be yield, and absorbs the share of
-///         yield that is not skimmed. See the PRD ("Part 1 - Yield Skimmer module") for the full rationale.
+///         one account, and credits it to recipients by share. Principal is a self-healing watermark: after every
+///         skim it IS the position, so everything that stays in the vault (a retained share of yield, an unannounced
+///         deposit, yield the caps left behind) is endowment capital and is never skimmable again, and a position that
+///         fell is simply the new watermark. See the PRD ("Part 1 - Yield Skimmer module") for the full rationale.
 /// @dev The only calls this contract ever makes from the account are exactly two, in one batch:
 ///      `vault.withdraw(take, account, account)` and `asset.transfer(address(this), take)`. There is no generic
 ///      execute passthrough and no owner; every admin function is `onlyAccount`. `account`, `vault` and `asset` are
@@ -220,7 +221,9 @@ contract YieldSkimmer {
     ///         and into this contract. The first call ever only records the starting watermark.
     /// @dev Reverts, with no partial state change, if the vault cannot serve the withdrawal (there is no try/catch by
     ///      design: the next poke retries). State is written before the external batch so a reentrant call sees the
-    ///      new `lastSkim`/`principal`.
+    ///      new `lastSkim`/`principal`; `principal` is then set to the position re-read after the batch, so share
+    ///      rounding is reflected exactly and `principal == position()` when this returns. A second call in the same
+    ///      block therefore recognizes nothing (its ceiling is zero), and one a few seconds later only what accrued.
     function skim() external whenNotPaused {
         uint256 assets = position();
 
@@ -231,11 +234,12 @@ contract YieldSkimmer {
             return;
         }
 
-        (uint256 newPrincipal, uint256 yieldAmt) = _evaluate(assets, principal, block.timestamp - lastSkim);
+        uint256 yieldAmt = _evaluate(assets, principal, block.timestamp - lastSkim);
         uint256 take = yieldAmt * totalShareBps / BPS;
 
-        // The share that is not taken is retained: it becomes endowment capital and is never skimmable again.
-        newPrincipal += yieldAmt - take;
+        // Everything that stays in the vault is principal: the retained share, unannounced deposits and whatever the
+        // caps left behind all compound from here on.
+        uint256 newPrincipal = assets - take;
         lastSkim = block.timestamp;
         principal = newPrincipal;
 
@@ -243,12 +247,9 @@ contract YieldSkimmer {
             _credit(yieldAmt);
             _withdrawToModule(take);
 
-            // The vault rounds shares up on `withdraw`, so the position can land a wei under the watermark.
-            uint256 remaining = position();
-            if (remaining < newPrincipal) {
-                newPrincipal = remaining;
-                principal = remaining;
-            }
+            // The vault rounds shares up on `withdraw`; reflect that exactly rather than assuming `assets - take`.
+            newPrincipal = position();
+            principal = newPrincipal;
         }
 
         emit Skimmed(assets, yieldAmt, take, newPrincipal);
@@ -332,7 +333,9 @@ contract YieldSkimmer {
 
     /// @notice Sets the annualized rate ceiling and the per-skim cap.
     /// @dev `capBps_` may be up to 65,535 but must be non-zero. `absoluteMaxPerSkim_ == 0` is allowed and makes every
-    ///      skim recognize no yield (the whole excess is still absorbed or retained as usual).
+    ///      skim recognize no yield (the whole excess compounds into principal instead).
+    ///      Keep `absoluteMaxPerSkim` above the yield of the longest expected gap between pokes: whatever it cuts off
+    ///      stays in the vault and becomes principal rather than reaching recipients later.
     /// @param capBps_ New annualized rate ceiling in bps.
     /// @param absoluteMaxPerSkim_ New per-skim yield cap in asset units.
     function setCap(uint16 capBps_, uint256 absoluteMaxPerSkim_) external onlyAccount {
@@ -394,7 +397,7 @@ contract YieldSkimmer {
     function previewSkim() external view returns (uint256 yieldAmt, uint256 take) {
         if (lastSkim == 0) return (0, 0);
 
-        (, yieldAmt) = _evaluate(position(), principal, block.timestamp - lastSkim);
+        yieldAmt = _evaluate(position(), principal, block.timestamp - lastSkim);
         take = yieldAmt * totalShareBps / BPS;
     }
 
@@ -440,34 +443,19 @@ contract YieldSkimmer {
         if (paused) revert SkimmerPaused();
     }
 
-    /// @dev Steps 2-4 of the mechanics: ratchet, absorb, cap. Pure function of its inputs plus `capBps` and
-    ///      `absoluteMaxPerSkim`, shared by `skim` and `previewSkim` so they cannot drift.
-    /// @return newPrincipal The watermark after the ratchet and absorption, before the retained share is added.
-    /// @return yieldAmt The yield recognized, `min(assets - newPrincipal, ceiling, absoluteMaxPerSkim)`.
-    function _evaluate(
-        uint256 assets,
-        uint256 p,
-        uint256 elapsed
-    )
-        internal
-        view
-        returns (uint256 newPrincipal, uint256 yieldAmt)
-    {
+    /// @dev Steps 2-4 of the mechanics: ratchet, ceiling, cap. A pure function of its inputs plus `capBps` and
+    ///      `absoluteMaxPerSkim`, shared by `skim` and `previewSkim` so they cannot drift. There is no separate
+    ///      absorption step: anything above the recognized yield stays in the vault and `skim` makes it principal.
+    /// @return yieldAmt The yield recognized, `min(assets - ratcheted principal, ceiling, absoluteMaxPerSkim)`.
+    function _evaluate(uint256 assets, uint256 p, uint256 elapsed) internal view returns (uint256 yieldAmt) {
         // Ratchet down: withdrawals and vault losses move the watermark with them.
         if (assets < p) p = assets;
 
         // `p * capBps * elapsed / (365 days * BPS)` with a 512-bit intermediate.
         uint256 ceiling = Math.mulDiv(p, uint256(capBps) * elapsed, YEAR_BPS);
 
-        // Absorb: an excess over the ceiling cannot be yield, so it is treated as a deposit.
-        uint256 excess = assets - p;
-        if (excess > ceiling) {
-            p = assets - ceiling;
-            excess = ceiling;
-        }
-
-        newPrincipal = p;
-        yieldAmt = Math.min(excess, absoluteMaxPerSkim);
+        // An excess over the ceiling cannot be yield (it is treated as a deposit), and the caps bound the rest.
+        yieldAmt = Math.min(Math.min(assets - p, ceiling), absoluteMaxPerSkim);
     }
 
     /// @dev Step 8: credit each recipient its share of `yieldAmt`. Per-recipient rounding is down, so the credited sum
