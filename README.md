@@ -5,11 +5,13 @@ position and credits it to recipients by share. The spec is Part 1 of
 [`PRD Yield Skimmer Module + Song A Day Endowment.md`](<./PRD Yield Skimmer Module + Song A Day Endowment.md>).
 Part 2 (the Song A Day bidder) is not implemented here.
 
-| Contract | What it is |
+| Path | What it is |
 | --- | --- |
 | `src/YieldSkimmer.sol` | The module. One instance per endowment subaccount; `account`, `vault` and `asset` are immutable. No owner, no upgrades, no generic execute passthrough. The only calls it can make from the account are `vault.withdraw(take, account, account)` then `asset.transfer(module, take)`, in one `executeFromModule(Call[])` batch. |
 | `src/NoopModule.sol` | An intentionally empty module for rollout step 1 (prove the platform lets a module be enabled and disabled). |
 | `src/interfaces/ISmartVaultModuleManager.sol` | The slice of the deployed SmartVault `ModuleManager` the module needs (`Call`, `executeFromModule(Call[])`, `enableModule`, `disableModule`, `isModuleEnabled`). |
+| `script/` | Forge deploy scripts (`DeployNoopModule`, `DeployYieldSkimmer`): CREATE2 through the default deployer, sanity checks on the account, and the enable/disable calldata plus the Splits CLI call to print. |
+| `ops/keeper.sh`, `.github/workflows/keeper.yml` | The keeper: `skim()` when `previewSkim()` has something, `pull()` for each due recipient. Daily from a GitHub Actions cron with a gas-only key. |
 
 ## How a skim works
 
@@ -81,47 +83,119 @@ forge fmt --check
   clean transient storage) and does its first `skim()` (views only) before anything else mutates the wrapper. In
   production each `skim()` is its own transaction, so this does not apply.
 
-## Rollout step 1: enable and disable the no-op module
+- `ops/test-keeper.sh`: the deploy scripts and the keeper end to end on a local `anvil` fork of Base (needs `anvil`,
+  `forge`, `cast`, `jq`; kills anvil on exit):
 
-The module path is `enableModule(address)` called **by the account on itself** (`onlySelf`). With the Splits CLI that
-is a custom transaction whose call has `target = <subaccount>`, `value = 0`, and `data` as below.
+  ```sh
+  BASE_RPC_URL=https://mainnet.base.org ops/test-keeper.sh   # falls back to base-rpc.publicnode.com
+  ```
+
+  It creates a SmartVault through the real factory, writes its USDC straight into USDC's balance storage
+  (`anvil_setStorageAt`, the `deal` equivalent), deposits into the real wrapper by impersonating the account, deploys
+  the skimmer with `script/DeployYieldSkimmer.s.sol`, enables it with the calldata the script prints, and runs
+  `ops/keeper.sh` against it: init, `DRY_RUN`, paused, skim plus pull after `anvil_increaseTime` 30 days (real Morpho
+  interest does move on anvil, because every call is its own transaction), a recipient whose `pull()` reverts (blacklisted
+  in USDC) not failing the run, a skipped no-op skim, and a skim that cannot be sent failing the run. `SIMULATE_YIELD=1`
+  swaps the interest for an unannounced 20 USDC deposit (the fallback for an environment where it does not move);
+  `VERBOSE=1` prints the whole deploy script output.
+
+## Runbook
+
+Write-ups for the PRD rollout steps. Everything below is Base (8453). You need a funded deployer
+(`cast wallet import <keystore-name> --interactive`) and `export BASE_RPC_URL=https://mainnet.base.org`.
+
+**How a module is switched on and off.** `enableModule(address)` and `disableModule(address)` are `onlySelf`: the
+account must call itself. In Splits that is a custom transaction with one call `{to: <ACCOUNT>, data: <calldata>,
+value: "0"}` that the account's signers approve. Both deploy scripts print the exact calldata, the Splits CLI
+invocation and the same payload as MCP tool arguments:
 
 ```sh
-# 1. Deploy the no-op module (any funded deployer key).
-forge create src/NoopModule.sol:NoopModule --rpc-url "$BASE_RPC_URL" --account <keystore-name> --broadcast
-#    -> Deployed to: <NOOP>
-
-# 2. Calldata for the self-call that enables it. selector 0x610b5925
-cast calldata "enableModule(address)" <NOOP>
-#    e.g. 0x610b5925000000000000000000000000000000000000000000000000000000000000dead
-
-# 3. Submit it as a custom transaction from the subaccount to itself, then confirm onchain:
-cast call <SUBACCOUNT> "isModuleEnabled(address)(bool)" <NOOP> --rpc-url "$BASE_RPC_URL"   # -> true
-
-# 4. Tear it down the same way. selector 0xa95f5246
-cast calldata "disableModule(address)" <NOOP>
+splits transactions create custom --account <ACCOUNT> --chain-id 8453 \
+  --calls '[{"to":"<ACCOUNT>","data":"0x610b5925…","value":"0"}]' --memo "Enable …"
 ```
 
-## Rollout step 2: the skimmer
+Caveat, checked 2026-10-15 (no credentials needed): `splits-cli` 0.3.0 pins `incur` 0.3.13, which passes each `--calls`
+item to its validator as a string, so the command above fails with `expected object, received string` whether the
+value is one object or an array. The same payload works as the arguments of the MCP tool
+`transactions_create_custom` (`claude mcp add splits -e SPLITS_API_KEY=… -- npx @splits/splits-cli --mcp`). Re-check
+with a newer CLI before relying on the argv form.
+
+Every script below does a dry run (simulate, send nothing) when `--broadcast` is left off; it prints the predicted
+CREATE2 address and all calldata, so run that first. Re-running a broadcast after a successful deploy skips the deploy.
+
+### Step 1: NoopModule
 
 ```sh
-# Deploy (Base). 3000 bps = 30% APR ceiling, 50_000_000 = 50 USDC per-skim cap (USDC has 6 decimals).
-forge create src/YieldSkimmer.sol:YieldSkimmer --rpc-url "$BASE_RPC_URL" --account <keystore-name> --broadcast \
-  --constructor-args <SUBACCOUNT> 0x189A1a23F46321a196646314E6a078a404513C8F 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 3000 50000000
-
-# Enable it on the subaccount (self-call, as above).
-cast calldata "enableModule(address)" <SKIMMER>
-
-# Admin calls are custom transactions from the subaccount to the skimmer, e.g. a 40% recipient with a 1-day interval:
-cast calldata "addRecipient(address,uint16,uint32)" <RECIPIENT> 4000 86400
-
-# Before removing the module, drain unpulled accrued back to the account, then disable it.
-cast calldata "drainTo(address)" <SUBACCOUNT>
-cast calldata "disableModule(address)" <SKIMMER>
+export ACCOUNT=<SUBACCOUNT>
+forge script script/DeployNoopModule.s.sol --rpc-url "$BASE_RPC_URL"                                    # dry run
+forge script script/DeployNoopModule.s.sol --rpc-url "$BASE_RPC_URL" --broadcast --account <keystore-name>
 ```
 
-Before baking the vault in as immutable, confirm the subaccount's shares are in `splitsUSDC`
-(`0x189A…3C8F`) and not the legacy Aave vault (`0x4EA7…caCc`).
+1. Submit the printed `enableModule` self-call (CLI or MCP form above) and sign it.
+2. Confirm onchain: `cast call $ACCOUNT "isModuleEnabled(address)(bool)" <NOOP> --rpc-url "$BASE_RPC_URL"` is `true`.
+3. Submit the printed `disableModule` self-call the same way; the same `cast call` now returns `false`.
+
+### Step 2: the skimmer
+
+```sh
+export ACCOUNT=<SUBACCOUNT>
+# optional: VAULT (default splitsUSDC) ASSET (USDC) CAP_BPS (3000) ABSOLUTE_MAX_PER_SKIM (50000000 = 50 USDC) SALT
+forge script script/DeployYieldSkimmer.s.sol --rpc-url "$BASE_RPC_URL"                                  # dry run
+forge script script/DeployYieldSkimmer.s.sol --rpc-url "$BASE_RPC_URL" --broadcast --account <keystore-name>
+```
+
+Before deploying, the script reverts if `ACCOUNT` has no code or does not answer `isModuleEnabled`, `VAULT.asset()` is
+not `ASSET`, or the account holds no `VAULT` shares. It warns, without failing, if the account's ERC-1967 implementation
+is not `0x15ec…F3FA` (accounts upgrade individually), if it still holds legacy Aave vault shares (`0x4EA7…caCc`), or if
+`AutoEarnModuleV2` (`0x4A5a…9F5f`) is not enabled on it. Shares must already be in the vault: `vault` is immutable.
+
+1. Enable it: submit the printed `enableModule` self-call, then `cast call $ACCOUNT "isModuleEnabled(address)(bool)"
+   <SKIMMER> --rpc-url "$BASE_RPC_URL"` is `true`.
+2. Verify the source. The script prints this line with your constructor args filled in:
+
+   ```sh
+   forge verify-contract --verifier sourcify --chain base --constructor-args <printed hex> <SKIMMER> src/YieldSkimmer.sol:YieldSkimmer
+   ```
+
+3. Add the first recipient (step 2 of the rollout: 100% to an EOA you control, no interval). Admin calls are custom
+   transactions whose `to` is the **skimmer** and whose sender is the account (the account is `msg.sender`, which is
+   what `onlyAccount` checks):
+
+   ```sh
+   cast calldata "addRecipient(address,uint16,uint32)" <MY_EOA> 10000 0
+   # --calls '[{"to":"<SKIMMER>","data":"<that calldata>","value":"0"}]' --account <ACCOUNT> --chain-id 8453
+   ```
+
+4. Set up the keeper (`.github/workflows/keeper.yml`, daily 09:00 UTC; it runs `ops/keeper.sh`):
+
+   ```sh
+   cast wallet new                                  # the keeper EOA: gas only, hold ~0.002 ETH on Base
+   gh secret set KEEPER_PRIVATE_KEY                 # that key
+   gh secret set BASE_RPC_URL
+   gh variable set SKIMMER_ADDRESS --body <SKIMMER>
+   gh workflow run keeper.yml -f dry_run=true       # prints the cast send commands; then run it without dry_run
+   ```
+
+   The first run sees `lastSkim() == 0` and sends the initializing `skim()` (records the watermark, moves nothing).
+   After that the keeper sends `skim()` only when `previewSkim()` reports `take > 0`, then `pull(r)` for each recipient
+   with `accrued > 0` and `now >= lastPull + minInterval`; a failing `pull` is logged and skipped, a failing `skim`
+   fails the run. By hand: `SKIMMER=… RPC_URL=… DRY_RUN=1 ops/keeper.sh`, or look with
+   `cast call <SKIMMER> "previewSkim()(uint256,uint256)" --rpc-url "$BASE_RPC_URL"` (yieldAmt, take). A skim moves
+   about 650k gas through the wrapper's three hops, still cents on Base. GitHub pauses scheduled workflows after 60 days
+   without repo activity.
+
+5. Teardown: submit `drainTo(<ACCOUNT>)` (to the skimmer, as above) so unpulled `accrued` is not stranded, then the
+   printed `disableModule` self-call.
+
+### Step 3: another recipient
+
+The Glider portfolio account is a plain address that comes from Glider's enrollment. Shares across recipients sum to at
+most 10,000 bps, so first lower or remove the step 2 EOA (`setRecipient(<MY_EOA>, 5000, 0)` or `removeRecipient`), then
+register it as one more custom transaction to the skimmer, 50% with a 7-day interval:
+
+```sh
+cast calldata "addRecipient(address,uint16,uint32)" <GLIDER_ACCOUNT> 5000 604800
+```
 
 ## Security notes
 
