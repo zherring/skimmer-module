@@ -1,0 +1,945 @@
+[
+ {
+  "type": "constructor",
+  "inputs": [
+   {
+    "name": "initialOwner",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "initialBeneficiary",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "initialEditionBeneficiary",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_editionContract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "initialContract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "initialInitiator",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "Auction_BidPlaced",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_bidder",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "_bidAmount",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_BidRemoved",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_bidder",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "_bidAmount",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_Claimed",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_EndTimeUpdated",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_endTime",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_IncentivePaid",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_earner",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "_incentiveAmount",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_Initialized",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_tokenID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_contractAddress",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "_tokenKind",
+    "type": "bytes4",
+    "indexed": false,
+    "internalType": "bytes4"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "Auction_StartTimeUpdated",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "indexed": true,
+    "internalType": "uint256"
+   },
+   {
+    "name": "_startTime",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "OwnershipTransferred",
+  "type": "event",
+  "inputs": [
+   {
+    "name": "previousOwner",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "newOwner",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   }
+  ],
+  "anonymous": false
+ },
+ {
+  "name": "beneficiary",
+  "type": "function",
+  "inputs": [],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "bid",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_bidAmount",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_highestBid",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_bidder",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "payable"
+ },
+ {
+  "name": "claim",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "claimMultiple",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionIDs",
+    "type": "uint256[]",
+    "internalType": "uint256[]"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "editionBeneficiary",
+  "type": "function",
+  "inputs": [],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "editionContract",
+  "type": "function",
+  "inputs": [],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionBidDecimals",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionBidMultiplier",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionDebt",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionDueIncentives",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionEndTime",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionHighestBid",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionHighestBidder",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionID",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "",
+    "type": "bytes4",
+    "internalType": "bytes4"
+   },
+   {
+    "name": "_tokenID",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionIDSongADao",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_tokenID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionIncMax",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionIncMin",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionStartTime",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getAuctionStepMin",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getContractAddress",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getEditionTokenId",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getHammerTimeDuration",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getTokenAmount",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "pure"
+ },
+ {
+  "name": "getTokenId",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getTokenKind",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "bytes4",
+    "internalType": "bytes4"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "getWithdrawBalance",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "account",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "modifyAnAuctionTokenSongAdao",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_initiator",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_startTime",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_endTime",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "owner",
+  "type": "function",
+  "inputs": [],
+  "outputs": [
+   {
+    "name": "",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "registerAnAuctionContract",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_initiator",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "registerAnAuctionTokenSongAdao",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_tokenID",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_startTime",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_endTime",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_editionTokenID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "renounceOwnership",
+  "type": "function",
+  "inputs": [],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "setBeneficiary",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_beneficiary",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "setBiddingAllowed",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "_value",
+    "type": "bool",
+    "internalType": "bool"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "setEditionBeneficiary",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_editionBeneficiary",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "setEditionContract",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_contract",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "setEditionTokenId",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   },
+   {
+    "name": "_editionTokenID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "supportsInterface",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "interfaceId",
+    "type": "bytes4",
+    "internalType": "bytes4"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "bool",
+    "internalType": "bool"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "transferOwnership",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "newOwner",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ },
+ {
+  "name": "wasClaimed",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_auctionID",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "bool",
+    "internalType": "bool"
+   }
+  ],
+  "stateMutability": "view"
+ },
+ {
+  "name": "withdraw",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "_withdrawer",
+    "type": "address",
+    "internalType": "address"
+   }
+  ],
+  "outputs": [],
+  "stateMutability": "nonpayable"
+ }
+]
