@@ -39,10 +39,10 @@ The module tracks one number, `principal`, in underlying-asset units (USDC). Eve
 
 1. **Read the position.** `assets = vault.convertToAssets(vault.balanceOf(account))`. The wrapper is a stock Morpho `VaultV2` (ERC-4626, 18-decimal shares); its fees accrue by minting shares to the fee recipient (`VaultV2.sol:636-680`), so share price — and therefore this number — is net of all fees.
 2. **Ratchet down.** If `assets < principal`, set `principal = assets`. In a lending vault the only way assets fall below the watermark is a withdrawal I made, or a vault loss; either way the watermark follows. Withdrawals never need announcing.
-3. **Absorb implausible inflows.** `ceiling = principal × capBps × elapsed / (365 days × 10,000)`. If `assets − principal > ceiling`, the excess over the ceiling cannot be yield; treat it as a deposit and fold it into `principal`. A forgotten $10k deposit becomes principal on the next poke, not a $10k skim. False positives only compound.
+3. **Bound the yield.** `ceiling = principal × capBps × elapsed / (365 days × 10,000)`. Anything above the ceiling cannot be yield at any plausible rate, so it is a deposit. A forgotten $10k deposit becomes principal on the next poke, not a $10k skim. False positives only compound.
 4. **Compute the skim.** `yield = min(assets − principal, ceiling, absoluteMaxPerSkim)`. The rate cap bounds any single failure to one period of allowance. There is no liquidity term: on Morpho V2 `maxWithdraw`, `maxRedeem`, `maxDeposit` and `maxMint` are hard-coded `pure … return 0` (`VaultV2.sol:726-742`), and real liquidity sits three hops down (wrapper → `MorphoVaultV1Adapter` → steakUSDC → `MorphoMarketV1AdapterV2` → Morpho Blue). A skim the vault can't serve reverts and is retried on the next poke; at this size that is tens of dollars against ~$157M of free liquidity in steakUSDC's terminal market. Never call `forceDeallocate` — the wrapper's penalty is 2%, the contract maximum.
 5. **Execute one batch** via `executeFromModule(Call[])` (selector `0xde77d70e`): `take = yield × totalShareBps / 10,000`, then `vault.withdraw(take, account, account)` and `USDC.transfer(module, take)`. Only the recipients' share leaves the vault; the rest of the yield stays and compounds. The account is `msg.sender == onBehalf`, so no share allowance is needed. All four gates on the wrapper are zero and their setters are abdicated, so this path can never be gated later. Moving the USDC out in the same batch matters: `AutoEarnModuleV2.deposit(account)` is permissionless and sweeps the account's entire USDC balance back into the vault.
-6. **Credit recipients.** Add `yield × shareBps / 10,000` to each recipient's `accrued`. Fold the retained share into the watermark, `principal += yield − take`, so it is endowment capital from now on and never skimmable again. Re-read the position and ratchet once more in case the vault's share rounding left it a wei under. Set `lastSkim = block.timestamp`.
+6. **Credit recipients and reset the watermark.** Add `yield × shareBps / 10,000` to each recipient's `accrued`. Then `principal = assets − take`: everything that stays in the vault — unannounced deposits, the retained share of yield, and whatever the caps left behind — is endowment capital from now on. There is never a carry balance, so a repeat poke a block later finds nothing to fold and nothing to grab. Re-read the position after the batch so share rounding is reflected exactly. Set `lastSkim = block.timestamp`.
 
 `capBps` is a stored parameter, not an oracle. Set it well above any real net yield (e.g. 3,000 = 30% APR) so it only bites on money that isn't yield.
 
@@ -119,7 +119,7 @@ One module instance per endowment subaccount; `account` is fixed at deploy so a 
 | Chain | Base | Earn vault and Song A Day auction both live here |
 | `vault` | `0x189A1a23F46321a196646314E6a078a404513C8F` (`splitsUSDC`) | The one pooled Earn USDC vault on Base. Confirm the endowment subaccount is enrolled on it and not the legacy Aave vault (`0x4EA71A20e655794051D1eE8b6e4A3269B13ccaCc`, still holding ~$547k) before baking it in as immutable |
 | `capBps` | 3,000 (30% APR) | Several times any plausible net stablecoin yield; only bites on non-yield |
-| `absoluteMaxPerSkim` | \~$50 | Belt-and-suspenders on a single call while the heuristics are unproven |
+| `absoluteMaxPerSkim` | \~$50 | Belt-and-suspenders on a single call while the heuristics are unproven. Must stay above the yield of the longest expected gap between pokes, or the excess compounds instead of reaching recipients |
 | Skim cadence | Daily, from a cron | Matches the auction cadence; nothing enforces it onchain |
 | First recipient | Glider portfolio account, 5,000 bps, 7-day interval | A plain address with no code. The other 5,000 compounds until the bidder joins at its 4,000; strategy and share are mine to pick at enrollment |
 | Initial principal | Whatever I'm comfortable losing to a bug in v1 | This is an experiment first |
@@ -128,8 +128,8 @@ One module instance per endowment subaccount; `account` is fixed at deploy so a 
 
 Invariants the tests should assert:
 
-- After any `skim()`, `vault.convertToAssets(vault.balanceOf(account)) ≥ principal` (the position never drops below the watermark by the module's action).
-- `principal` only moves down via the ratchet, and up via absorption (unannounced deposits, the retained share of yield) or `resetPrincipal` — a skim never lowers it.
+- After any `skim()`, `principal == vault.convertToAssets(vault.balanceOf(account))` — the watermark is the position, exactly.
+- `principal` only moves down via the ratchet, and up via absorption (unannounced deposits, the retained share of yield, yield the caps left behind) or `resetPrincipal` — a skim never lowers it.
 - Total credited to recipients ≤ total skimmed, always.
 - Any single `skim()` moves ≤ `min(ceiling, absoluteMaxPerSkim)`.
 
