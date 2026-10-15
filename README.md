@@ -17,13 +17,17 @@ Part 2 (the Song A Day bidder) is not implemented here.
 
 1. First call ever: `principal = position`, `lastSkim = now`, nothing moves.
 2. Ratchet: `if (position < principal) principal = position`.
-3. Ceiling: `principal * capBps * elapsed / (365 days * 10_000)`. Anything above the ceiling cannot be yield and is folded
-   into `principal` (an unannounced deposit becomes principal, not a skim).
+3. Ceiling: `principal * capBps * elapsed / (365 days * 10_000)`. Position above the ceiling cannot be yield (it is
+   treated as a deposit).
 4. `yield = min(position - principal, ceiling, absoluteMaxPerSkim)`; `take = yield * totalShareBps / 10_000`.
 5. If `take > 0`: withdraw `take` from the vault and move it to the module in one batch. Credit each recipient
    `yield * shareBps / 10_000` (rounding dust stays in the module, uncredited).
-6. The retained share (`yield - take`) is folded into `principal`; the position is re-read and the watermark ratcheted
-   once more in case share rounding left it a wei under.
+6. `lastSkim = now`, and `principal = position` re-read after the batch.
+
+**After every skim the watermark is the position**: everything that stays in the vault (the retained share of yield, an
+unannounced deposit, yield the caps cut off) is principal and never skimmable again, so a second `skim()` in the same
+block is a no-op. Keep `absoluteMaxPerSkim` above the yield of the longest expected gap between pokes, otherwise the
+excess compounds instead of reaching recipients.
 
 Recipients **pull**: `pull(r)` sends `accrued[r]` to `r` once its `minInterval` has passed. Admin
 (`addRecipient`, `setRecipient`, `removeRecipient`, `setCap`, `resetPrincipal`, `pause`, `unpause`, `drainTo`) is
@@ -55,9 +59,9 @@ forge fmt --check
   when a sub-call fails), plus a fuzz test of a single skim.
 - `test/invariants/YieldSkimmer.inv.t.sol`: a handler that deposits, withdraws, moves the share price up and down,
   warps 0-60 days, skims, pulls, adds/changes/removes recipients, pauses and drains. It asserts the four PRD
-  invariants (position >= principal after a skim; principal only lowered by the ratchet; credited <= skimmed; a skim
+  invariants (`principal == position` after every skim; principal only lowered by the ratchet; credited <= skimmed; a skim
   moves <= `min(ceiling, absoluteMaxPerSkim)` with the ceiling restated independently), plus: module balance >= sum of
-  accrued, `previewSkim` equals what `skim` moves, a skim only reverts on a liquidity shortfall and then leaves no
+  accrued, `previewSkim` equals what `skim` moves, a same-block second skim is a no-op, a skim only reverts on a liquidity shortfall and then leaves no
   trace, and the result matches a from-scratch reference model of the PRD mechanics. Defaults are 256 runs x depth 100
   (`foundry.toml`).
 - `test/fork/YieldSkimmer.fork.t.sol`: a Base fork against the real Splits Earn wrapper and a SmartVault created
@@ -124,8 +128,5 @@ Before baking the vault in as immutable, confirm the subaccount's shares are in 
 - A module has the account's full `_call` surface; the skimmer's code is the scope. Keep the endowment in its own
   subaccount, with a human in its signer threshold.
 - `removeRecipient` forfeits the recipient's unpulled `accrued` to the account. Auto-earn sweeps it into the vault,
-  where it is treated like any other inflow (absorbed or skimmed again within the ceiling).
-- Two `skim()` calls in the same block: the second has `elapsed == 0`, so its ceiling is 0 and nothing moves, but any
-  excess left above the watermark by `absoluteMaxPerSkim` is folded into `principal` rather than skimmed later.
-  Raise `absoluteMaxPerSkim` if that matters; it is the PRD's rule applied literally.
+  where it is treated like any other inflow (up to the ceiling it is yield again, the rest becomes principal).
 - This has not been audited.
