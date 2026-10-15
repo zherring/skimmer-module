@@ -4,7 +4,7 @@ Researched 15 Oct 2026 from [docs.glider.fi](https://docs.glider.fi) (`llms-full
 
 ## Verdict
 
-Viable, and the simplest recipient of the three on the table: **a plain address, no adapter contract, no key that can touch principal.** Glider gives each portfolio a per-chain ZeroDev Kernel smart account whose root owner is your EOA; the account is "exposed simply as a deposit address: any tokens sent there are swapped by Glider's automation into the portfolio strategy's target allocations" (confirmed, `guides/security-architecture`). So the skimmer registers that account as a recipient, a cron calls `pull(gliderAccount)` on the skimmer's `minInterval`, and Glider's rebalance schedule sweeps the USDC into the index. The DCA cadence is the skimmer's `minInterval`; Glider has no recurring-buy feature of its own (confirmed — `schedule` is the rebalance cadence, enum `hourly|daily|weekly|monthly` or cron).
+Viable, and the simplest recipient of the three on the table: **a plain address, no adapter contract, no key that can touch principal.** Status 15 Oct 2026: chosen as the first live recipient; enrollment waits on a Glider staging/B2B key. Glider gives each portfolio a per-chain ZeroDev Kernel smart account whose root owner can be **a Splits account** (`accountType: "ERC1271"` — Glider verifies the owner's EIP-712 signature with `isValidSignature` on Base and installs its SmartAccount sudo validator, confirmed in `guides/two-stage-enrollment`); the account is "exposed simply as a deposit address: any tokens sent there are swapped by Glider's automation into the portfolio strategy's target allocations" (confirmed, `guides/security-architecture`). So the skimmer registers that account as a recipient, a cron calls `pull(gliderAccount)` on the skimmer's `minInterval`, and Glider's rebalance schedule sweeps the USDC into the index. The DCA cadence is the skimmer's `minInterval`; Glider has no recurring-buy feature of its own (confirmed — `schedule` is the rebalance cadence, enum `hourly|daily|weekly|monthly` or cron).
 
 What it costs in trust: Glider's offchain agent holds a user-signed, revocable session key over that one account (confirmed). Worst case is the contents of the Glider account — exactly the "buggy recipient" row of the skimmer threat model. Nothing in the model asks for an allowance on the endowment subaccount or any other account (confirmed).
 
@@ -27,7 +27,7 @@ Two properties that matter for us:
 
 ## Integration with the skimmer
 
-1. Enroll once (glider.fi UI, or `POST /enroll` with your EOA signing) into a strategy whose targets are not USDC. Record the Base smart-account address.
+1. Enroll once through the B2B API with `accountType: "ERC1271"` and a Splits account as `ownerAccountId` (the app's wallet-connect can't speak for a SmartVault), into a strategy whose targets are not USDC. The owner account needs `threshold` EOA signers you hold: the deployed SmartVault's ERC-1271 wraps the hash as `SplitMessage(bytes32)` under domain `splitsSmartVault/1` and expects `abi.encode({signerIndex, signatureData}[])`; `ops/sign-as-account/` (PR #2) builds that signature from signer keys and refuses to print it until the vault's own `isValidSignature` accepts it. Passkey signers can't be scripted — Splits' only message-signing path is an internal, session-auth, passkey-only endpoint with no threshold assembly. The treasury can still rotate the owner subaccount's signers, so custody stays in Splits. Record the Base smart-account address.
 2. `addRecipient(gliderAccount, shareBps, minInterval)` on the skimmer — e.g. 3,000 bps, 7 days for weekly DCA.
 3. Cron: `pull(gliderAccount)` after each interval. Glider picks the USDC up on its next scheduled rebalance, or immediately on `POST /portfolios/{id}/rebalance` (inferred — pickup timing is not documented; sub-`thresholdUsd` amounts probably wait).
 4. If you hold an API key at all, scope it to `portfolios:read` + `portfolios:write` (start/stop/rebalance). Never `strategies:write` — a leaked key with that scope can retarget the allocation. Never `portfolios:withdraw` (it still needs your signature, but there's no reason to hold it).
@@ -39,6 +39,7 @@ Note rebalancing touches the whole portfolio, not only new USDC, so a daily sche
 1. The exact onchain session-key policy: which contracts and selectors the agent may call, the fee cap, expiry — and whether it has been audited.
 2. Is a plain ERC-20 deposit picked up only on the next scheduled tick, and how are amounts under `thresholdUsd` handled?
 3. Real fee schedule (platform fee, API pricing) and ToS / US eligibility for the strategies we'd use.
+4. Whether a Coinbase-Smart-Wallet-derived account with its own replay-safe wrap (the Splits SmartVault) is on the "supported smart-contract wallets" list. Their verifier "re-hashes the typed-data using the wallet's own `chainId`" and then calls `isValidSignature`; if that call is a plain onchain `eth_call`, any ERC-1271 wallet works. Staging is the test.
 
 ## The purer alternative
 
