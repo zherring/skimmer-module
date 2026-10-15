@@ -66,7 +66,7 @@ node sign-as-account.mjs \
 | `--vault <addr>` | The Splits SmartVault. Must have code. |
 | `--rpc <url>` | JSON-RPC for the chain the vault lives on (Base). The wrap uses this chain's id. |
 | `--typed-data <file>` | A full EIP-712 payload, exactly what a wallet's `signTypedData` takes: `{ domain, types, primaryType, message }`. A saved Glider stage-1 response (`message.typedData`) is also accepted. `uint`/`int` values may be JSON numbers or decimal/hex strings. |
-| `--key <i>:<0xkey>` or `--key <i>:env:VAR` | Private key for signer slot `i`. Repeat for each signer. Keys are never logged or echoed in errors. |
+| `--key <i>:<0xkey>`, `--key <i>:env:VAR` or `--key <i>:keystore:<0xaddress>` | Private key for signer slot `i`. Repeat for each signer. `keystore:` reads a local EOA saved by `splits auth create-key` / `import-key` from `~/.splits/config.json` in-process, so the key never passes through a shell — prefer it. Keys are never logged or echoed in errors. |
 | `--threshold-override <n>` | Use `n` instead of the on-chain threshold for the "enough keys" pre-check only. The final on-chain verification is still authoritative, so an override that disagrees with the vault fails there. Mostly useful to prove that. |
 
 Output (stdout), only after the vault accepts the signature:
