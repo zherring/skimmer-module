@@ -14,6 +14,7 @@
 // Importable: glider-enroll.mjs uses signAsAccount() so both tools share one signing path.
 
 import { readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -153,10 +154,14 @@ export function wrapHash({ vault, chainId, hash }) {
 // Keys
 // ---------------------------------------------------------------------------------------------
 
-/** Parses "<index>:<0x privkey>" or "<index>:env:VAR". Never echoes the key in an error. */
+/**
+ * Parses "<index>:<0x privkey>", "<index>:env:VAR", or "<index>:keystore:<0xaddress>" (a local EOA saved by
+ * `splits auth create-key` / `import-key` in ~/.splits/config.json, read in-process so the key never touches a shell).
+ * Never echoes the key in an error.
+ */
 export function parseKeySpec(spec, env = process.env) {
   const m = /^(\d{1,3}):(.+)$/.exec(spec);
-  if (!m) throw new SignError('--key: expected <index>:<0xprivatekey> or <index>:env:VAR');
+  if (!m) throw new SignError('--key: expected <index>:<0xprivatekey>, <index>:env:VAR or <index>:keystore:<0xaddress>');
   const index = Number(m[1]);
   if (index > 255) throw new SignError(`--key: signer index ${index} is out of range (0-255)`);
   let secret = m[2];
@@ -165,6 +170,19 @@ export function parseKeySpec(spec, env = process.env) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new SignError(`--key ${index}: invalid env var name`);
     if (!env[name]) throw new SignError(`--key ${index}: environment variable ${name} is not set`);
     secret = env[name].trim();
+  } else if (secret.startsWith('keystore:')) {
+    const address = secret.slice('keystore:'.length);
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new SignError(`--key ${index}: keystore: expects a 0x address`);
+    const path = `${homedir()}/.splits/config.json`;
+    let keys;
+    try {
+      keys = JSON.parse(readFileSync(path, 'utf8')).keys ?? {};
+    } catch {
+      throw new SignError(`--key ${index}: cannot read the Splits CLI keystore at ${path}`);
+    }
+    const entry = Object.entries(keys).find(([a]) => a.toLowerCase() === address.toLowerCase());
+    if (!entry?.[1]?.privateKey) throw new SignError(`--key ${index}: no local key for ${address} in ${path}`);
+    secret = String(entry[1].privateKey).trim();
   }
   if (!secret.startsWith('0x')) secret = `0x${secret}`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(secret)) {
