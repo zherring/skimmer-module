@@ -34,6 +34,32 @@ Two properties that matter for us:
 
 Note rebalancing touches the whole portfolio, not only new USDC, so a daily schedule means daily swap fees on the full position; weekly or monthly is the better fit for a DCA pot.
 
+## Implementation sketch (16 Oct 2026, read-only discovery; nothing built)
+
+**The key.** It is a **production** tenant key ("Zach @ Splits"; staging rejects it) carrying all ten scopes, including `strategies:write`, `enroll:write`, `portfolios:withdraw`, `tenant:write` and `fees:write`. Treat it as the operator key: keep it offline, and mint a second key in the console with only `portfolios:read` (+ `portfolios:write` if the keeper should trigger rebalances) for anything automated. There is no staging key, so the first enrollment is real — which is fine, because enrollment moves no funds. Tenant preferences (`slippageBps`, `priceImpactBps`, `thresholdUsd`) and the integrator `swapBps` are all unset, so Glider's defaults apply; nothing has been created yet (zero strategies, zero portfolios).
+
+**What exists on Base to mirror** (`GET /discovery/strategies?collection=…`, TVL and enrolled portfolios as of today):
+
+| Strategy | Assets | TVL | Portfolios | Notes |
+| --- | --- | --- | --- | --- |
+| 50/50 BTC and ETH `01JWZFPZBPXEDT4E4FS62B252H` | 2 | $195k | 961 | The same basket as the permissionless fallback; simplest possible first target |
+| The Base App Boosted Blue-chips `01KRP2K5G16TST9KW0KDY36420` | 5 | $139k | 6,621 | |
+| Base Ecosystem ETF `01KJT32V6CJNR7AQXAJBJ54DDG` | 6 | $179k | 3,036 | |
+| The Big Five `01JWZEE2MF30KVRMRX53N88VA4` | 5 | $112k | 1,270 | |
+| Bitwise Mag7x `01KZY1G56YFYWKS8AH0PR1YMQX` | 8 | $1.03M | 2,232 | Coinbase tokenized equities (`0xb2…` addresses), 0.20% fee, "+10% incentive"; non-US persons only |
+
+Everything else in the curated list runs on BNB Chain (56) or mainnet. A strategy of our own (`POST /strategies/validate`, then `POST /strategies`) is the alternative when a public one's provider shouldn't be able to retarget our allocation.
+
+**The flow, endpoint by endpoint.**
+
+1. **Strategy.** Mirror one of the above by id, or create our own with no USDC target and `PUT /strategies/{id}/schedule` set to weekly — the schedule is Glider's rebalance cadence, not ours; the skimmer's `minInterval` is the DCA.
+2. **Enroll, owned by the Glider Owner subaccount.** `POST /enroll/signature` with `accountType: "ERC1271"`, `ownerAccountId: "eip155:0:0x779262Cbf52a2034D92b809c6BAE9673B66D45D0"`, `chainIds: [8453]`, the `strategyId`, and a `flowId`. It returns `message.typedData`. Sign it as the account: `ops/sign-as-account/sign-as-account.mjs --vault 0x7792…45D0 --typed-data <file> --key 0:keystore:0x70995E4F21C7d37f45AbCeF4545466b0071f26Db` (proven live on 16 Oct against this exact account). `POST /enroll` with the signature returns `smartAccounts[]`; the `eip155:8453:0x…` entry is the Kernel account — the recipient address.
+3. **Register.** From the Endowment: `addRecipient(kernel, 5000, 7 days)` as a custom tx (MCP form, passkey-signed).
+4. **Run.** The keeper's weekly `pull(kernel)` is the deposit; Glider picks it up on its schedule, or `POST /portfolios/{id}/rebalance` forces it. Watch `GET /portfolios/{id}/positions` and `/performance` (`cashFlowUsd` shows the deposits).
+5. **Exit, if ever.** `POST /portfolios/{id}/withdraw/signature` → sign the same way → `POST /withdraw`, within its 10-minute TTL, to a recipient such as the Treasury. Root authority never leaves the Splits account; the Treasury can rotate the Glider Owner's signer at any time.
+
+**What the first run has to prove, in order.** (a) Glider's verifier accepts a Splits-wrapped ERC-1271 signature — stage 1 → sign → stage 2 costs nothing and answers it. (b) The Kernel address comes back deterministic and chain-bound to Base. (c) `thresholdUsd`: at $10 of principal the weekly pull is about $0.004, below any plausible sweep threshold, so either the Endowment gets more principal first or the Kernel account is topped up by hand once to see a sweep happen. (d) The actual fee stack on the swaps once a sweep runs. (e) For Bitwise Mag7x, the eligibility terms before choosing it.
+
 ## Open questions for Glider
 
 1. The exact onchain session-key policy: which contracts and selectors the agent may call, the fee cap, expiry — and whether it has been audited.
