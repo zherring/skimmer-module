@@ -56,7 +56,13 @@ send() {
     log "DRY_RUN: cast send $SKIMMER ${args}--rpc-url \"\$RPC_URL\" --private-key \"\$KEEPER_PRIVATE_KEY\""
     return 0
   fi
-  if ! out="$(cast send "$SKIMMER" "$@" --json --rpc-url "$RPC_URL" --private-key "$KEEPER_PRIVATE_KEY" 2>"$ERR_FILE")"; then
+  # Estimate on the latest block and pass an explicit limit. Some public RPCs (mainnet.base.org, 2026-10-16) evaluate
+  # eth_estimateGas on a pending block whose timestamp sits behind a Morpho market's lastUpdate, and the vault's
+  # convertToAssets then panics with an arithmetic underflow; the same call on latest, and the real block, succeed.
+  local est gas_limit
+  est="$(cast estimate "$SKIMMER" "$@" --from "$keeper_addr" --block latest --rpc-url "$RPC_URL" 2>/dev/null || true)"
+  if [[ "$est" =~ ^[0-9]+$ ]]; then gas_limit=$((est * 13 / 10)); else gas_limit=400000; log "$label: estimate on latest failed, using gas limit $gas_limit"; fi
+  if ! out="$(cast send "$SKIMMER" "$@" --json --gas-limit "$gas_limit" --rpc-url "$RPC_URL" --private-key "$KEEPER_PRIVATE_KEY" 2>"$ERR_FILE")"; then
     log "$label: send failed: $(scrub "$(cat "$ERR_FILE")" | cut -c1-240)"
     return 1
   fi
